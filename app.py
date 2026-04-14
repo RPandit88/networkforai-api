@@ -153,7 +153,7 @@ def analyze():
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
                         "temperature": 0.2,
-                        "maxOutputTokens": 1500
+                        "maxOutputTokens": 8192
                     }
                 },
                 timeout=45
