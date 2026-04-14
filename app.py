@@ -7,7 +7,7 @@ import json
 import requests
 
 app = Flask(__name__)
-CORS(app, origins=["https://networkforai.com", "https://www.networkforai.com", "*"])
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type"]}})
 
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
