@@ -2,17 +2,37 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import re
 import os
+import time
+import json
 import requests
 
 app = Flask(__name__)
 CORS(app)
 
-# ─── GEMINI CONFIG ────────────────────────────────────────────────
-GEMINI_KEY   = os.environ.get("GEMINI_KEY", "")
-GEMINI_URL   = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 
-# ─── LOG REDACTION ────────────────────────────────────────────────
+# ── HELPERS ──────────────────────────────────────────────────────────────────
+
+def extract_json(raw):
+    """
+    Robustly extract a JSON object from Gemini's response.
+    Handles markdown fences, leading/trailing text, and partial wrapping.
+    """
+    # remove markdown code fences
+    clean = re.sub(r"```json\s*", "", raw)
+    clean = re.sub(r"```\s*", "", clean).strip()
+
+    # try to find the first complete {...} block
+    match = re.search(r"\{.*\}", clean, re.DOTALL)
+    if match:
+        clean = match.group(0)
+
+    return json.loads(clean)
+
+
+# ── LOG REDACTION ─────────────────────────────────────────────────────────────
 
 def redact_log(text, rules):
     out    = text
@@ -27,8 +47,7 @@ def redact_log(text, rules):
             counts["cred"] += 1
             return m.group(1) + ": [REDACTED]"
         out = re.sub(
-            r'(password|passwd|secret|community|auth[\s\-]?key|md5|enable)'
-            r'\s*[:=]?\s*\S+',
+            r"(password|passwd|secret|community|auth[\s\-]?key|md5|enable)\s*[:=]?\s*\S+",
             replace_cred, out, flags=re.IGNORECASE
         )
 
@@ -37,7 +56,7 @@ def redact_log(text, rules):
             counts["mac"] += 1
             return "[MAC_REDACTED]"
         out = re.sub(
-            r'([0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}',
+            r"([0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}",
             replace_mac, out
         )
 
@@ -49,33 +68,26 @@ def redact_log(text, rules):
                 as_map[n] = "AS{}".format(as_idx[0])
                 as_idx[0] += 1
             return as_map[n]
-        out = re.sub(
-            r'\bAS\s?(\d{1,10})\b',
-            replace_as, out, flags=re.IGNORECASE
-        )
+        out = re.sub(r"\bAS\s?(\d{1,10})\b", replace_as, out, flags=re.IGNORECASE)
 
     if rules.get("ip"):
         def replace_ip(m):
             counts["ip"] += 1
             full   = m.group(0)
-            key    = re.sub(r'\/\d+$', '', full)
+            key    = re.sub(r"\/\d+$", "", full)
             suffix = full[len(key):]
             if key not in ip_map:
                 ip_map[key] = "[IP_{}]".format(str(ip_idx[0]).zfill(3))
                 ip_idx[0] += 1
             return ip_map[key] + suffix
-        out = re.sub(
-            r'\b(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?\b',
-            replace_ip, out
-        )
+        out = re.sub(r"\b(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?\b", replace_ip, out)
 
     if rules.get("host"):
         def replace_host(m):
             counts["host"] += 1
             return "[HOST_REDACTED]"
         out = re.sub(
-            r'\b(router|switch|sw|pe|ce|rr|spine|leaf|fw|'
-            r'firewall|core|edge|agg|dist)-[\w\-]+\b',
+            r"\b(router|switch|sw|pe|ce|rr|spine|leaf|fw|firewall|core|edge|agg|dist)-[\w\-]+\b",
             replace_host, out, flags=re.IGNORECASE
         )
 
@@ -88,14 +100,11 @@ def redact():
     if not body:
         return jsonify({"error": "No JSON body"}), 400
     log_text = body.get("log", "")
-    rules    = body.get("rules", {
-        "ip": True, "mac": True,
-        "as": True, "host": True, "cred": True
-    })
+    rules    = body.get("rules", {"ip": True, "mac": True, "as": True, "host": True, "cred": True})
     return jsonify(redact_log(log_text, rules))
 
 
-# ─── ANOMALY DETECTION ────────────────────────────────────────────
+# ── ANOMALY DETECTION ─────────────────────────────────────────────────────────
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
@@ -115,15 +124,17 @@ def analyze():
     if not log_text:
         return jsonify({"error": "No log text provided"}), 400
 
-    prompt = """You are a senior network operations engineer. Analyze this network log for anomalies and security threats.
-
-Environment: {env} | Network: {ntype} | Focus: {focus}{ctx}
-
-Log:
-{log}
-
-Reply ONLY with valid JSON, no markdown fences, no extra text:
-{{"anomalies":[{{"severity":"critical|warning|info|normal","type":"short label","title":"concise title","description":"2-3 sentences explaining what was detected and why it matters","recommendation":"specific actionable step"}}],"summary":"3-4 sentence executive summary of overall health and key findings","counts":{{"critical":0,"warning":0,"info":0,"normal":0}}}}""".format(
+    prompt = (
+        "You are a senior network operations engineer. Analyze this network log for anomalies and security threats.\n\n"
+        "Environment: {env} | Network: {ntype} | Focus: {focus}{ctx}\n\n"
+        "Log:\n{log}\n\n"
+        "Reply ONLY with valid JSON, no markdown, no extra text, no code fences:\n"
+        '{{"anomalies":[{{"severity":"critical|warning|info|normal","type":"short label",'
+        '"title":"concise title","description":"2-3 sentences explaining what was detected and why it matters",'
+        '"recommendation":"specific actionable step"}}],'
+        '"summary":"3-4 sentence executive summary of overall health and key findings",'
+        '"counts":{{"critical":0,"warning":0,"info":0,"normal":0}}}}'
+    ).format(
         env=env,
         ntype=ntype,
         focus=focus,
@@ -131,42 +142,64 @@ Reply ONLY with valid JSON, no markdown fences, no extra text:
         log=log_text
     )
 
-    try:
-        resp = requests.post(
-            GEMINI_URL + "?key=" + GEMINI_KEY,
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1500}
-            },
-            timeout=30
-        )
+    resp = None
+    last_error = ""
 
-        if resp.status_code != 200:
-            error_data = resp.json()
-            error_msg  = error_data.get("error", {}).get("message", "Unknown Gemini error")
-            return jsonify({"error": error_msg}), resp.status_code
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                GEMINI_URL + "?key=" + GEMINI_KEY,
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.2,
+                        "maxOutputTokens": 1500
+                    }
+                },
+                timeout=45
+            )
 
-        data = resp.json()
-        raw  = data["candidates"][0]["content"]["parts"][0]["text"]
-        clean = raw.replace("```json", "").replace("```", "").strip()
+            # retry on overload or rate limit
+            if resp.status_code in (429, 503):
+                last_error = resp.json().get("error", {}).get("message", "Overloaded")
+                time.sleep(5)
+                continue
 
-        import json
-        parsed = json.loads(clean)
-        return jsonify(parsed)
+            if resp.status_code != 200:
+                error_data = resp.json()
+                error_msg  = error_data.get("error", {}).get("message", "Unknown Gemini error")
+                return jsonify({"error": error_msg}), resp.status_code
 
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Gemini API timed out. Try again."}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+            # parse Gemini response robustly
+            data = resp.json()
+            raw  = data["candidates"][0]["content"]["parts"][0]["text"]
+
+            try:
+                parsed = extract_json(raw)
+            except Exception as parse_err:
+                return jsonify({
+                    "error": "JSON parse error: {}. Raw response: {}".format(str(parse_err), raw[:200])
+                }), 500
+
+            return jsonify(parsed)
+
+        except requests.exceptions.Timeout:
+            last_error = "Gemini API timed out"
+            time.sleep(3)
+            continue
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    return jsonify({"error": "Gemini unavailable after 3 attempts: " + last_error}), 503
 
 
-# ─── HEALTH CHECK ─────────────────────────────────────────────────
+# ── HEALTH ────────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status":      "ok",
-        "gemini_key":  "configured" if GEMINI_KEY else "MISSING"
+        "status":     "ok",
+        "gemini_key": "configured" if GEMINI_KEY else "MISSING"
     })
 
 
