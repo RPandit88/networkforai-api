@@ -32,6 +32,7 @@ GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 
+# ── HELPERS ───────────────────────────────────────────────────────────────────
 
 def extract_json(raw):
     clean = re.sub(r"```json\s*", "", raw)
@@ -81,6 +82,8 @@ def call_gemini(prompt, max_tokens=8192):
 
     raise ValueError("Gemini unavailable after 3 attempts: " + last_error)
 
+
+# ── LOG REDACTION ─────────────────────────────────────────────────────────────
 
 def redact_log(text, rules):
     out    = text
@@ -149,6 +152,7 @@ def redact():
     return jsonify(redact_log(log_text, rules))
 
 
+# ── ANOMALY DETECTION ─────────────────────────────────────────────────────────
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
@@ -186,6 +190,7 @@ def analyze():
         return jsonify({"error": str(e)}), 500
 
 
+# ── SWITCH REPLACEMENT PLANNER ────────────────────────────────────────────────
 
 EOL_MODELS = [
     "WS-C2960", "WS-C3560", "WS-C3750", "WS-C4500",
@@ -308,7 +313,7 @@ def plan():
     if not devices:
         return jsonify({"error": "No devices provided"}), 400
 
-  
+    # score each device
     scored = []
     for device in devices:
         device_score = score_device(device)
@@ -337,6 +342,7 @@ def plan():
     })
 
 
+# ── HEALTH ────────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
 def health():
