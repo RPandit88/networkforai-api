@@ -16,6 +16,17 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    import traceback
+    from flask import Response
+    resp = jsonify({"error": str(e), "trace": traceback.format_exc()})
+    resp.status_code = 500
+    resp.headers["Access-Control-Allow-Origin"]  = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return resp
+
 @app.route("/analyze", methods=["OPTIONS"])
 @app.route("/redact",  methods=["OPTIONS"])
 @app.route("/plan",    methods=["OPTIONS"])
